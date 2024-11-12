@@ -2,6 +2,7 @@ import datetime
 import os
 import time
 import warnings
+import presets
 
 import numpy as np
 
@@ -13,9 +14,10 @@ import utils
 from sampler import RASampler
 from torch import nn
 from torch.utils.data.dataloader import default_collate
+from torchvision.transforms.functional import InterpolationMode
 
-from dataset import DATES
-
+from dataset import DATES_ARXIUS
+import wandb
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None, scaler=None):
     model.train()
@@ -24,7 +26,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
     metric_logger.add_meter("img/s", utils.SmoothedValue(window_size=10, fmt="{value}"))
 
     header = f"Epoch: [{epoch}]"
-    for i, (image, target) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
+    for i, (image, target, _, _) in enumerate(metric_logger.log_every(data_loader, args.print_freq, header)):
         start_time = time.time()
         image, target = image.to(device), target.to(device)
         with torch.amp.autocast('cuda', enabled=scaler is not None):
@@ -35,7 +37,6 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         if scaler is not None:
             scaler.scale(loss).backward()
             if args.clip_grad_norm is not None:
-                # we should unscale the gradients of optimizer's assigned params if do gradient clipping
                 scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad_norm)
             scaler.step(optimizer)
@@ -49,12 +50,14 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         if model_ema and i % args.model_ema_steps == 0:
             model_ema.update_parameters(model)
             if epoch < args.lr_warmup_epochs:
-                # Reset ema buffer to keep copying weights during warmup period
                 model_ema.n_averaged.fill_(0)
 
         batch_size = image.shape[0]
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
         metric_logger.meters["img/s"].update(batch_size / (time.time() - start_time))
+
+        # Log training loss and learning rate to W&B
+        wandb.log({"Train Loss": loss.item(), "Learning Rate": optimizer.param_groups[0]["lr"], "Epoch": epoch})
 
     return metric_logger.loss.global_avg
 
@@ -64,44 +67,37 @@ def evaluate(args, model, criterion, data_loader, device, print_freq=100, log_su
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = f"Test: {log_suffix}"
 
-    mae = 0  # just used for classification task (compute mae with DEW paper formula)
-    accuracy = 0  # just used for classification task (compute accuracy classes)
+    dataset = data_loader.dataset
+    mae, accuracy, num_processed_samples = 0, 0, 0
 
-    num_processed_samples = 0
     with torch.inference_mode():
-        for idx, (image, target) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
-            image = image.to(device, non_blocking=True)
-            target = target.to(device, non_blocking=True)
+        for idx, (image, target, min_years, max_years) in enumerate(
+                metric_logger.log_every(data_loader, print_freq, header)):
+            image, target = image.to(device, non_blocking=True), target.to(device, non_blocking=True)
             output = model(image)
             loss = criterion(output, target)
 
             batch_size = image.shape[0]
             metric_logger.update(loss=loss.item())
 
-            if not args.regression:
-                years_pred_batch, correct_predictions_batch = compute_metrics_batch_classification(args, target, output)
-                for i in range(len(target)):
-                    mae += abs(years_pred_batch[i] - int(data_loader.dataset.labels[idx * batch_size + i]))
-                accuracy += correct_predictions_batch
+            pred_classes = torch.argmax(output, dim=1).cpu().numpy()
+            year_preds = dataset.dataset.min_year + np.floor(
+                0.5 + ((dataset.dataset.max_year - dataset.dataset.min_year) / dataset.dataset.classes) * pred_classes).astype(int)
 
+            errors = []
+            for year_pred, min_year, max_year in zip(year_preds, min_years, max_years):
+                errors.append(0 if min_year <= year_pred <= max_year else min(abs(year_pred - min_year),
+                                                                              abs(year_pred - max_year)))
+
+            target_classes = np.array((target.detach().cpu().numpy() - dataset.dataset.min_year) // 5)
+            accuracy += np.sum(target_classes == pred_classes)
+            mae += np.sum(errors)
             num_processed_samples += batch_size
-    # gather the stats from all processes
 
-    num_processed_samples = utils.reduce_across_processes(num_processed_samples)
-    if (
-        hasattr(data_loader.dataset, "__len__")
-        and len(data_loader.dataset) != num_processed_samples
-        and torch.distributed.get_rank() == 0
-    ):
-        warnings.warn(
-            f"It looks like the dataset has {len(data_loader.dataset)} samples, but {num_processed_samples} "
-            "samples were used for the validation, which might bias the results. "
-            "Try adjusting the batch size and / or the world size. "
-            "Setting the world size to 1 is always a safe bet."
-        )
+            # Log validation loss to W&B
+            wandb.log({"Validation Loss": loss.item(), "Epoch": args.epochs, "Step": idx})
 
     metric_logger.synchronize_between_processes()
-
     if not args.regression and not args.test_only:
         print("----------------------------------------------------------------------------------")
         print(f"MAE_val: {mae / len(data_loader.dataset)}")
@@ -109,39 +105,10 @@ def evaluate(args, model, criterion, data_loader, device, print_freq=100, log_su
         print("----------------------------------------------------------------------------------")
 
     if not args.regression and args.test_only:
-        return np.array(mae / len(data_loader.dataset))
+        wandb.log({"MAE Test": mae / len(data_loader.dataset)})
+        return mae / len(data_loader.dataset)
     else:
         return metric_logger.loss.global_avg
-
-
-def compute_metrics_batch_classification(args, target, output):
-    years_pred_batch = np.array([])
-    cls_pred_batch = 0
-    num_classes = 14
-
-    output = torch.sigmoid(output)
-    output = output / torch.sum(output, dim=1, keepdim=True)  # normalize output by 1
-    output = output.cpu().detach().numpy()
-    new_target = np.zeros(args.batch_size)
-
-    for i in range(args.batch_size):
-        for j in range(len(target[i])):  # count the number of 1s in the target till there is a 0
-            if target[i][j] == 1:
-                new_target[i] += 1
-            else:
-                break
-    target = new_target
-
-    for i in range(len(target)):
-        if np.argmax(output[i]) == target[i]:
-            cls_pred_batch += 1
-
-        year_pred = 1930 + np.floor(0.5 + ((1999 - 1930) / (num_classes - 1))
-                                    * np.sum(output[i] * np.arange(0, num_classes)))
-
-        years_pred_batch = np.append(years_pred_batch, year_pred)
-
-    return years_pred_batch, cls_pred_batch
 
 
 def _get_cache_path(filepath):
@@ -155,30 +122,62 @@ def _get_cache_path(filepath):
 
 def load_data(args):
     print("Loading data")
-    dataset = DATES(args)
 
-    if args.weights and args.test_only:
-        weights = torchvision.models.get_weight(args.weights)
-        preprocessing = weights.transforms()
+    # Define transformations for each dataset split
+    train_transforms = presets.ClassificationPresetTrain(
+        crop_size=args.train_crop_size,
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        interpolation=InterpolationMode(args.interpolation),
+        auto_augment_policy=getattr(args, "auto_augment", None),
+        random_erase_prob=getattr(args, "random_erase", 0.0),
+        ra_magnitude=getattr(args, "ra_magnitude", None),
+        augmix_severity=getattr(args, "augmix_severity", None),
+    )
 
-    dataset_val = DATES(args, split='val')
-    dataset_test = DATES(args, split='test')
+    val_transforms = presets.ClassificationPresetEval(
+        crop_size=args.val_crop_size,
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        resize_size=args.val_resize_size,
+        interpolation=InterpolationMode(args.interpolation)
+    )
+
+    test_transforms = val_transforms  # Assuming test and validation use the same transform
+
+    # Create the DATES_ARXIUS dataset instances with appropriate transforms
+    dataset_train = DATES_ARXIUS(args, transform=train_transforms)
+    dataset_val = DATES_ARXIUS(args, transform=val_transforms)
+    dataset_test = DATES_ARXIUS(args, transform=test_transforms)
+
+    # Get indices for train, validation, and test splits
+    np.random.seed(42)
+    idx_val = np.random.choice(len(dataset_train), int(0.1 * len(dataset_train)), replace=False)
+    idx_test = np.random.choice(len(dataset_train), 10000, replace=False)
+    idx_train = np.array([i for i in range(len(dataset_train)) if i not in idx_val and i not in idx_test])
+
+    # Apply indices to create subsets
+    dataset_train = torch.utils.data.Subset(dataset_train, idx_train)
+    dataset_val = torch.utils.data.Subset(dataset_val, idx_val)
+    dataset_test = torch.utils.data.Subset(dataset_test, idx_test)
 
     print("Creating data loaders")
     if args.distributed:
         if hasattr(args, "ra_sampler") and args.ra_sampler:
-            train_sampler = RASampler(dataset, shuffle=True, repetitions=args.ra_reps)
+            train_sampler = RASampler(dataset_train, shuffle=True, repetitions=args.ra_reps)
         else:
-            train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+            train_sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
         test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_val, shuffle=False)
     else:
-        train_sampler = torch.utils.data.RandomSampler(dataset)
+        train_sampler = torch.utils.data.RandomSampler(dataset_train)
         test_sampler = torch.utils.data.SequentialSampler(dataset_val)
 
-    return dataset, dataset_val, dataset_test, train_sampler, test_sampler
+    return dataset_train, dataset_val, dataset_test, train_sampler, test_sampler
 
 
 def main(args):
+    wandb.init(project="DEW_arxius", config=args)  # Initialize W&B with your project name
+
     if args.output_dir:
         utils.mkdir(args.output_dir)
 
@@ -195,7 +194,7 @@ def main(args):
     dataset, dataset_val, dataset_test, train_sampler, test_sampler = load_data(args)
 
     collate_fn = None
-    num_classes = dataset.classes
+    num_classes = dataset.dataset.classes
 
     mixup_transforms = []
     if args.mixup_alpha > 0.0 and not args.regression:
@@ -232,10 +231,6 @@ def main(args):
 
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-
-    #weights = np.array([9, 8, 7, 7, 6, 4, 3, 1, 1, 1, 1, 1, 1, 1])  # to balance the classes
-    #weights = torch.FloatTensor(weights).cuda()
-
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     custom_keys_weight_decay = []
@@ -360,6 +355,8 @@ def main(args):
         avg_loss = train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
         lr_scheduler.step()
         avg_val_loss = evaluate(args, model, criterion, data_loader_val, device=device)
+        wandb.log({"Average Train Loss": avg_loss, "Average Val Loss": avg_val_loss, "Epoch": epoch})
+
         if model_ema:
             avg_val_loss = evaluate(args, model_ema, criterion, data_loader_val, device=device, log_suffix="EMA")
         if args.output_dir:
@@ -374,10 +371,7 @@ def main(args):
                 checkpoint["model_ema"] = model_ema.state_dict()
             if scaler:
                 checkpoint["scaler"] = scaler.state_dict()
-            torch.save(checkpoint, os.path.join(args.output_dir,
-                                                f"{args.model}_regression-"
-                                                f"{args.regression}_segmentation-"
-                                                f"specialist-{args.specialist}.pth"))
+            torch.save(checkpoint, os.path.join(args.output_dir, 'date_estimator_arxius.pth'))
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -393,6 +387,9 @@ def main(args):
     else:
         mae = evaluate(args, model, criterion, data_loader_test, device=device)
     print('total MAE test: ', mae)
+    wandb.log({"Final MAE Test": mae})
+
+    wandb.finish()  # Close W&B logging session
     print("----------------------------------------------------------------")
     return
 
@@ -525,10 +522,6 @@ def get_args_parser(add_help=True):
         "--ra-reps", default=3, type=int, help="number of repetitions for Repeated Augmentation (default: 3)"
     )
     parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
-
-    parser.add_argument("--num-classes", type=int, required=True, help="the number of classes to classify")
-    parser.add_argument("--min-year", type=int, required=True, help="the min year to classify")
-    parser.add_argument("--max-year", type=int, required=True, help="the max year to classify")
 
     return parser
 
