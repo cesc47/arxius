@@ -98,13 +98,13 @@ def evaluate(args, model, criterion, data_loader, device, print_freq=100, log_su
             wandb.log({"Validation Loss": loss.item(), "Epoch": args.epochs, "Step": idx})
 
     metric_logger.synchronize_between_processes()
-    if not args.regression and not args.test_only:
+    if not args.test_only:
         print("----------------------------------------------------------------------------------")
         print(f"MAE_val: {mae / len(data_loader.dataset)}")
         print(f"Accuracy_val: {accuracy / len(data_loader.dataset)}")
         print("----------------------------------------------------------------------------------")
 
-    if not args.regression and args.test_only:
+    if args.test_only:
         wandb.log({"MAE Test": mae / len(data_loader.dataset)})
         return mae / len(data_loader.dataset)
     else:
@@ -197,9 +197,9 @@ def main(args):
     num_classes = dataset.dataset.classes
 
     mixup_transforms = []
-    if args.mixup_alpha > 0.0 and not args.regression:
+    if args.mixup_alpha > 0.0:
         mixup_transforms.append(transforms.RandomMixup(num_classes, p=1.0, alpha=args.mixup_alpha))
-    if args.cutmix_alpha > 0.0 and not args.regression:
+    if args.cutmix_alpha > 0.0:
         mixup_transforms.append(transforms.RandomCutmix(num_classes, p=1.0, alpha=args.cutmix_alpha))
     if mixup_transforms:
         mixupcutmix = torchvision.transforms.RandomChoice(mixup_transforms)
