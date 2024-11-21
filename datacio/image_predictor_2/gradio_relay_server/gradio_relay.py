@@ -6,7 +6,7 @@ import os
 import tempfile
 
 # Define the endpoint of the service
-SERVICE_URL = "http://localhost:5000/predict"
+SERVICE_URL = "http://158.109.8.116:5050/predict"
 
 
 def relay_to_service(file_path):
