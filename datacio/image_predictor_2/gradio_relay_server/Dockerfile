@@ -1,17 +1,20 @@
-# Dockerfile for Combined Gradio + Relay Server
-FROM python:3.8-slim
+# Use an official Python runtime as a parent image
+FROM python:3.9-slim
 
+# Set the working directory in the container
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Copy requirements.txt into the container
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the combined Gradio and Relay Server code
-COPY gradio_relay.py .
+# Copy the application code into the container
+COPY . .
 
-# Expose port 8000 for FastAPI and 7860 for Gradio
-EXPOSE 8000 7860
+# Expose the port the app runs on
+EXPOSE 7860
 
-# Run the combined Gradio + Relay Server
-CMD ["uvicorn", "gradio_relay:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the application
+CMD ["python", "gradio_relay.py"]

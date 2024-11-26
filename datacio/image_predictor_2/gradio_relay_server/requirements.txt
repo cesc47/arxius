@@ -1,5 +1,3 @@
-fastapi
-uvicorn
 gradio
 requests
-pillow
+Pillow
