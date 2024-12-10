@@ -8,12 +8,15 @@ import tempfile
 # Define the endpoint of the service
 SERVICE_URL = "http://localhost:5000/predict"  # Adjust as per your setup
 
+# Set Gradio temp directory
+os.environ["GRADIO_TEMP_DIR"] = "/home/fnet/gradio_tmp"
+
 def relay_to_service(file_path):
     # Handle the uploaded file
     previews = []
     captions = []  # To store filenames
     annotations = []  # To store annotations
-    temp_dir = tempfile.mkdtemp()
+    temp_dir = tempfile.mkdtemp(dir=os.environ["GRADIO_TEMP_DIR"])  # Use custom temp dir
     image_count = 0  # Count the number of images
 
     # If the file is a zip file, extract it and prepare previews
@@ -118,4 +121,6 @@ with gr.Blocks() as interface:
 
 # Launch the interface
 if __name__ == "__main__":
-    interface.launch(favicon_path="favicon.ico", server_port=7860, debug=True)
+    interface.launch(favicon_path=None, server_port=5006, server_name="158.109.8.116", debug=True, share=True)
+
+
