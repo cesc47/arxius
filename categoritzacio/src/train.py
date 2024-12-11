@@ -23,12 +23,13 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
 
     header = f"Epoch: [{epoch}]"
     for images, targets in metric_logger.log_every(data_loader, args.print_freq, header):
+        # remove the 2 dimensions from im
         images = images.to(device)
-        targets = {k: v.to(device) for k, v in targets.items()}
+        targets = targets.to(device)
 
         with torch.cuda.amp.autocast(enabled=args.amp):
             outputs = model(images)
-            loss, loss_debug = criterion(outputs, targets)
+            loss = criterion(outputs, targets)
 
         optimizer.zero_grad()
         if scaler:
@@ -44,8 +45,6 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
 
         batch_size = images.size(0)
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
-        for k, v in loss_debug.items():
-            metric_logger.meters[f"train_loss_{k}"].update(v, n=batch_size)
 
     return metric_logger.loss.global_avg
 
@@ -57,9 +56,9 @@ def evaluate(model, criterion, data_loader, device):
     with torch.inference_mode():
         for images, targets in metric_logger.log_every(data_loader, 100, "Test:"):
             images = images.to(device)
-            targets = {k: v.to(device) for k, v in targets.items()}
+            targets = targets.to(device)
             outputs = model(images)
-            loss, _ = criterion(outputs, targets)
+            loss = criterion(outputs, targets)
 
             metric_logger.update(loss=loss.item())
 
@@ -152,13 +151,11 @@ def main(args):
 
 
     print("Creating model")
-    model = torchvision.models.get_model(args.model, weights=args.weights)
-    model = nn.Sequential(*list(model.children())[:-1])  # remove last layer
-    model.add_module('classifier', nn.Sequential(
-        nn.LayerNorm((1024,)),
-        nn.Flatten(),
-        nn.Linear(1024, dataset_train.dataset.num_classes)
-    ))
+    model = torchvision.models.get_model(args.model, weights=args.weights, num_classes=1000)  # 1000 classes => imagenet
+    model.classifier = torch.nn.Sequential(
+        torch.nn.Flatten(),
+        torch.nn.Linear(1024, dataset_train.dataset.num_classes, bias=True)
+    )
     model.to(device)
 
     if args.distributed and args.sync_bn:
@@ -276,9 +273,9 @@ def main(args):
         torch.backends.cudnn.deterministic = True
 
         print("Test on validation set")
-        _ = evaluate(model, criterion, data_loader_val, dataset_val.dataset, device=device)
+        _ = evaluate(model, criterion, data_loader_val, device=device)
         print("Test on test set")
-        _ = evaluate(model, criterion, data_loader_test, dataset_test, device=device)
+        _ = evaluate(model, criterion, data_loader_test, device=device)
 
         return
 
@@ -291,14 +288,12 @@ def main(args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        avg_loss, avg_loss_tasks = train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
+        avg_loss = train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema, scaler)
         lr_scheduler.step()
-        avg_val_loss, avg_val_loss_tasks = evaluate(model, criterion, data_loader_val, device=device)
+        avg_val_loss = evaluate(model, criterion, data_loader_val, device=device)
         if model_ema:
-            avg_val_loss, avg_val_loss_tasks = evaluate(model, criterion, data_loader_val, device=device)
+            avg_val_loss = evaluate(model, criterion, data_loader_val, device=device)
         if args.log_wandb:
-            wandb.log(avg_loss_tasks, commit=False)
-            wandb.log(avg_val_loss_tasks, commit=False)
             wandb.log({"train_loss": avg_loss, "val_loss": avg_val_loss, "lr": optimizer.param_groups[0]["lr"]})
         if args.output_dir:
             checkpoint = {
