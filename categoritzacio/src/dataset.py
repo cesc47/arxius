@@ -79,31 +79,3 @@ class CATEGORITZACIO(Dataset):
 
     def __len__(self):
         return len(self.df)
-
-if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser(description='Dataset Loader')
-    parser.add_argument('--data_path', type=str, default='/media/francesc2/datasets', help='Path to the dataset directory')
-    parser.add_argument('--batch_size', type=int, default=4, help='Batch size for the DataLoader')
-    args = parser.parse_args()
-
-    # Define transformations (if any)
-    from torchvision import transforms
-    transform = transforms.Compose([
-        transforms.Resize((512, 512)),
-        transforms.ToTensor(),
-    ])
-
-    # Initialize dataset
-    dataset = CATEGORITZACIO(args, transform=transform)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
-
-    plot_label_distribution_with_missing(dataset)
-
-    # Iterate over data
-    """
-    for images, labels in dataloader:
-        print(f"Images: {images.shape}")
-        print(f"Labels: {labels}")
-    """
