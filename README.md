@@ -1,52 +1,52 @@
 
-# Project Documentation
+# 🌟 Project Documentation
 
-## Overview
+## 🚀 Overview
 
 This project consists of two main modules: `categoritzacio` and `datacio`. Each module focuses on a distinct task and functionality:
 
-1. **Categoritzacio**: Implements a multi-label classification system to categorize images based on predefined labels.
-2. **Datacio**: Implements a model that predicts the year of an image.
+1. **Categoritzacio**: 📂 Implements a multi-label classification system to categorize images based on predefined labels.
+2. **Datacio**: 🕰️ Implements a model that predicts the year of an image.
 
-Additionally, there is a submodule `image_predictor` that combines these functionalities into a deployable service using Docker.
+Additionally, there is a submodule `image_predictor_2` that combines these functionalities into a deployable service using Docker. 🐋
 
 ---
 
-## Project Structure
+## 🏗️ Project Structure
 
 ### Categoritzacio
 
 - **Description**: Implements a multi-label classification system to categorize images.
 - **Directory**: `categoritzacio`
 - **Key Files**:
-  - `src/dataset.py`:
+  - `src/dataset.py`: 📄
     - Defines the dataset handling and preprocessing methods.
-  - `src/train.py`:
+  - `src/train.py`: 🤖
     - Main script for training the classification model.
-  - `src/transforms.py`:
+  - `src/transforms.py`: 🎛️
     - Contains data augmentation and transformation utilities.
-  - `src/visualizations.py`:
-    - Visualization utilities for training and evaluation.
+  - `src/visualizations.py`: 📊
+    - Visualization utilities.
 
 ### Datacio
 
 - **Description**: Implements a model to predict the year of an image.
 - **Directory**: `datacio`
 - **Key Files**:
-  - `image_predictor/`
+  - `image_predictor_2/`: 🖼️
     - Includes Gradio-based servers for hosting and testing the predictor. Takes an input file or a ZIP archive containing images. Outputs the corresponding predicted years for the images.
     - Submodules:
-      - `gradio_relay_server/`
+      - `gradio_relay_server/`: 🌐
         - Implements a Gradio-based web interface.
-      - `prediction_server/`
+      - `prediction_server/`: ⚙️
         - Server for running the prediction model.
     - **Key Scripts**:
-      - `gradio_relay.py`: Defines the Gradio interface and functionalities.
-      - `service.py`: Handles backend operations for prediction.
+      - `gradio_relay.py`: 🌈 Defines the Gradio interface and functionalities.
+      - `service.py`: 🔧 Handles backend operations for prediction.
 
 ---
 
-## How to Use
+## 🛠️ How to Use
 
 ### Categoritzacio
 
@@ -70,10 +70,9 @@ Additionally, there is a submodule `image_predictor` that combines these functio
    --log_wandb
    ```
 
-
 ### Datacio
 
-1. If you want to train the image predictor navigate to `datacio/image_trainer`. 
+1. If you want to train the image predictor, navigate to `datacio/image_trainer`. 
 2. Train the prediction model with the following parameters:
    ```bash
    --data-path /your/data/path \
@@ -92,11 +91,10 @@ Additionally, there is a submodule `image_predictor` that combines these functio
    --weights ConvNeXt_Base_Weights.DEFAULT \
    ```
 
+### Docker Deployment (Datacio) for the Image Prediction Service
 
-### Docker Deployment (datacio) for the image prediction service
-
-1. Navigate to the `datacio/image_predictor` directory.
-2. To build the image prediction backend, navigate to `datacio/image_predictor/prediction_server` build the Docker image for:
+1. Navigate to the `datacio/image_predictor_2` directory.
+2. To build the image prediction backend, navigate to `datacio/image_predictor_2/prediction_server` and build the Docker image:
    ```bash
    docker build -t image-predictor .
    ```
@@ -105,7 +103,7 @@ Additionally, there is a submodule `image_predictor` that combines these functio
    docker run -p <port>:<port> image-predictor
    ```
 4. Access the service and upload images or ZIP files for year prediction.
-5. To build the front end, navigate to `datacio/image_predictor/gradio_relay_server` build the Docker image for:
+5. To build the front end, navigate to `datacio/image_predictor_2/gradio_relay_server` and build the Docker image:
    ```bash
    docker build -t gradio_service .
    ```
@@ -113,18 +111,18 @@ Additionally, there is a submodule `image_predictor` that combines these functio
    ```bash
    docker run -p <port>:<port> gradio_service
    ```
-   
+
 ---
 
-## Requirements
+## 🔧 Requirements
 
 ### General Dependencies
 
-- Python 3.8+
+- Python 3.8+ 🐍
 - Required Python libraries are listed in each module's `requirements.txt`.
 
-### Docker
+### Docker 🐳
 
 - Ensure Docker is installed and running on your system.
 
-
+---
